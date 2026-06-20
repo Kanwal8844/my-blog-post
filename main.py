@@ -39,22 +39,31 @@ blogs = [
 ]
 
 def get_blogger_service():
-    creds = None
-    if os.path.exists(TOKEN_PATH):
-        with open(TOKEN_PATH, 'rb') as token:
-            creds = pickle.load(token)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRET_FILE, scopes=['https://www.googleapis.com/auth/blogger'])
-            creds = flow.run_local_server(port=8080)
-            with open(TOKEN_PATH, 'wb') as token:
-                pickle.dump(creds, token)
-    return build('blogger', 'v3', credentials=creds)
+    try:
+        creds = None
+        if os.path.exists(TOKEN_PATH):
+            with open(TOKEN_PATH, 'rb') as token:
+                creds = pickle.load(token)
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRET_FILE, scopes=['https://www.googleapis.com/auth/blogger'])
+                creds = flow.run_local_server(port=8080)
+                with open(TOKEN_PATH, 'wb') as token:
+                    pickle.dump(creds, token)
+        return build('blogger', 'v3', credentials=creds)
+    except Exception as e:
+        print(f"CRITICAL ERROR: Blogger Service Connection Failed: {e}")
+        return None
 
 def post_to_pinterest(image_url, title, description):
+    print(f"DEBUG: Attempting to pin to Pinterest: {title}")
     try:
+        if not os.path.exists(COOKIES_PATH):
+            print("Pinterest Error: cookies file not found!")
+            return
+        
         with open(COOKIES_PATH, 'r') as f:
             cookies_list = json.load(f)
         session = requests.Session()
@@ -64,44 +73,61 @@ def post_to_pinterest(image_url, title, description):
         url = "https://www.pinterest.com/resource/PinCreateResource/create/"
         headers = {
             "User-Agent": "Mozilla/5.0",
-            "X-CSRFToken": "YOUR_CSRF_TOKEN_HERE", 
+            "X-CSRFToken": "YOUR_CSRF_TOKEN_HERE", # Yahan apna Token daalein
             "X-Requested-With": "XMLHttpRequest"
         }
         data = {
             "data": json.dumps({"options": {"board_id": "945122671824200517", "description": description, "link": "https://radiantagelessbeautysecrets.com/#aff=Hashmi8844", "title": title, "image_url": image_url, "method": "pin_create"}})
         }
-        session.post(url, headers=headers, data=data)
-        print(f"Pinterest Post Successful: {title}")
+        response = session.post(url, headers=headers, data=data)
+        
+        if response.status_code == 200:
+            print(f"SUCCESS: Pinterest Post Successful: {title}")
+        else:
+            print(f"Pinterest Error: Failed with status code {response.status_code}. Response: {response.text}")
     except Exception as e:
-        print(f"Pinterest Error: {e}")
+        print(f"Pinterest Exception: {e}")
 
 def get_post_content(blog_name):
-    # ... (آپ کا موجودہ گیٹ کنٹینٹ فنکشن یہاں رہے گا)
-    topic_chat = client.chat.completions.create(messages=[{"role": "user", "content": f"Give one specific, fresh trending skincare topic for {blog_name}."}], model="llama-3.3-70b-versatile")
-    topic = topic_chat.choices[0].message.content
-    article_chat = client.chat.completions.create(messages=[{"role": "user", "content": PROMPT_TEMPLATE.format(topic=topic)}], model="llama-3.3-70b-versatile")
-    article_full = article_chat.choices[0].message.content
-    lines = article_full.split('\n', 1)
-    title = lines[0] if len(lines) > 0 else "Untitled"
-    content = lines[1] if len(lines) > 1 else "Content missing"
-    img_url = requests.get(f"https://api.unsplash.com/photos/random?query=skincare&client_id={UNSPLASH_KEY}").json()['urls']['regular']
-    return title, content, img_url
+    try:
+        topic_chat = client.chat.completions.create(messages=[{"role": "user", "content": f"Give one specific, fresh trending skincare topic for {blog_name}."}], model="llama-3.3-70b-versatile")
+        topic = topic_chat.choices[0].message.content
+        article_chat = client.chat.completions.create(messages=[{"role": "user", "content": PROMPT_TEMPLATE.format(topic=topic)}], model="llama-3.3-70b-versatile")
+        article_full = article_chat.choices[0].message.content
+        lines = article_full.split('\n', 1)
+        title = lines[0] if len(lines) > 0 else "Untitled"
+        content = lines[1] if len(lines) > 1 else "Content missing"
+        img_url = requests.get(f"https://api.unsplash.com/photos/random?query=skincare&client_id={UNSPLASH_KEY}").json()['urls']['regular']
+        return title, content, img_url
+    except Exception as e:
+        print(f"Error in Content Generation: {e}")
+        return None, None, None
 
 def post_to_blogger(blog_id, title, content, img_url):
-    service = get_blogger_service()
-    post_body = {'kind': 'blogger#post', 'title': title, 'content': f'<img src="{img_url}"/><br/><br/>{content}'}
-    service.posts().insert(blogId=blog_id, body=post_body).execute()
-    print(f"Successfully posted to Blogger: {title}")
+    try:
+        service = get_blogger_service()
+        if service:
+            post_body = {'kind': 'blogger#post', 'title': title, 'content': f'<img src="{img_url}"/><br/><br/>{content}'}
+            service.posts().insert(blogId=blog_id, body=post_body).execute()
+            print(f"SUCCESS: Successfully posted to Blogger: {title}")
+        else:
+            print("Blogger post skipped due to service error.")
+    except Exception as e:
+        print(f"Blogger Post Error: {e}")
 
 while True:
     for blog in blogs:
         if blog["count"] < 5:
-            try:
-                title, content, img = get_post_content(blog['name'])
+            title, content, img = get_post_content(blog['name'])
+            if title and content and img:
                 post_to_blogger(blog['id'], title, content, img)
-                post_to_pinterest(img, title, title) # Pinterest Call
+                post_to_pinterest(img, title, title)
                 blog["count"] += 1
-                time.sleep(3600)
-            except Exception as e:
-                print(f"Error: {e}")
-                time.sleep(300)
+            else:
+                print(f"Skipping {blog['name']} due to content error.")
+            time.sleep(3600)
+        
+    if all(blog["count"] >= 5 for blog in blogs):
+        print("Daily limit reached. Resetting count.")
+        for blog in blogs: blog["count"] = 0
+        time.sleep(3600)
