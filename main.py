@@ -1,7 +1,9 @@
 import time
 import requests
+import json
 import pickle
 import os
+import random
 from groq import Groq
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
@@ -9,11 +11,13 @@ from google.auth.transport.requests import Request
 
 # API Keys
 GROQ_API_KEY = "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"
-UNSPLASH_KEY = "UE70h0Bf4EpxJYc58s2sckl6mBVoPx9x0JkDDF5duEg"
+PINTEREST_BOARD_ID = "945122671824200517"
+CSRF_TOKEN = "2f34ed73d33f780285ba8dffed4b5526"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TOKEN_PATH = os.path.join(BASE_DIR, 'token.pickle')
 CLIENT_SECRET_FILE = os.path.join(BASE_DIR, 'credentials.json')
+LINKS_FILE = os.path.join(BASE_DIR, 'links.txt')
 
 client = Groq(api_key=GROQ_API_KEY)
 
@@ -36,55 +40,90 @@ blogs = [
     {"name": "RadiantFaceTips", "id": "340863184931384661", "count": 0}
 ]
 
+def get_random_image_link():
+    with open(LINKS_FILE, 'r') as f:
+        links = [line.strip() for line in f if line.strip()]
+    return random.choice(links)
+
+def post_to_pinterest(image_url, title, description):
+    try:
+        with open('pinterest_cookies.json', 'r') as f:
+            cookies_list = json.load(f)
+        session = requests.Session()
+        for cookie in cookies_list:
+            session.cookies.set(cookie['name'], cookie['value'], domain=cookie['domain'])
+        
+        url = "https://www.pinterest.com/resource/PinCreateResource/create/"
+        
+        # Ye rahe updated headers
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            "X-CSRFToken": CSRF_TOKEN,
+            "X-Requested-With": "XMLHttpRequest",
+            "X-App-Type": "compiled",
+            "Referer": "https://www.pinterest.com/",
+            "Origin": "https://www.pinterest.com",
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+        
+        data = {
+            "source_url": "/pin-builder/",
+            "data": json.dumps({
+                "options": {
+                    "board_id": PINTEREST_BOARD_ID,
+                    "description": description,
+                    "link": "https://radiantagelessbeautysecrets.com/#aff=Hashmi8844",
+                    "title": title,
+                    "image_url": image_url,
+                    "method": "pin_create"
+                },
+                "context": {}
+            })
+        }
+        
+        response = session.post(url, headers=headers, data=data)
+        
+        if response.status_code == 200:
+            print(f"Pinterest Post Successful: {title}")
+        else:
+            print(f"Pinterest Failed! Status: {response.status_code}")
+            print(response.text)
+            
+    except Exception as e:
+        print(f"Pinterest Error: {e}")
+
 def get_blogger_service():
     creds = None
-    # 1. Check if token file exists
     if os.path.exists(TOKEN_PATH):
         with open(TOKEN_PATH, 'rb') as token:
             creds = pickle.load(token)
-            
-    # 2. If no valid credentials, run flow
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                CLIENT_SECRET_FILE,
-                scopes=['https://www.googleapis.com/auth/blogger']
-            )
-            # PC par browser khulne ke liye
+            flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRET_FILE, scopes=['https://www.googleapis.com/auth/blogger'])
             creds = flow.run_local_server(port=8080)
-            
-            # Save the file
             with open(TOKEN_PATH, 'wb') as token:
                 pickle.dump(creds, token)
-                
     return build('blogger', 'v3', credentials=creds)
 
 def get_post_content(blog_name):
-    topic_chat = client.chat.completions.create(
-        messages=[{"role": "user", "content": f"Give one specific, fresh trending skincare topic for {blog_name}."}],
-        model="llama-3.3-70b-versatile",
-    )
+    topic_chat = client.chat.completions.create(messages=[{"role": "user", "content": f"Give one specific, fresh trending skincare topic for {blog_name}."}], model="llama-3.3-70b-versatile")
     topic = topic_chat.choices[0].message.content
-    article_chat = client.chat.completions.create(
-        messages=[{"role": "user", "content": PROMPT_TEMPLATE.format(topic=topic)}],
-        model="llama-3.3-70b-versatile",
-    )
+    article_chat = client.chat.completions.create(messages=[{"role": "user", "content": PROMPT_TEMPLATE.format(topic=topic)}], model="llama-3.3-70b-versatile")
     article_full = article_chat.choices[0].message.content
     lines = article_full.split('\n', 1)
     title = lines[0] if len(lines) > 0 else "Untitled"
     content = lines[1] if len(lines) > 1 else "Content missing"
-    img_url = requests.get(f"https://api.unsplash.com/photos/random?query=skincare&client_id={UNSPLASH_KEY}").json()['urls']['regular']
+    img_url = get_random_image_link()
     return title, content, img_url
 
 def post_to_blogger(blog_id, title, content, img_url):
     service = get_blogger_service()
     post_body = {'kind': 'blogger#post', 'title': title, 'content': f'<img src="{img_url}"/><br/><br/>{content}'}
     service.posts().insert(blogId=blog_id, body=post_body).execute()
-    print(f"Successfully posted: {title}")
+    print(f"Successfully posted to Blogger: {title}")
 
-# مین لوپ
 while True:
     for blog in blogs:
         if blog["count"] < 5:
@@ -92,6 +131,7 @@ while True:
                 print(f"Posting to: {blog['name']} ({blog['count']+1}/5)")
                 title, content, img = get_post_content(blog['name'])
                 post_to_blogger(blog['id'], title, content, img)
+                post_to_pinterest(img, title, title)
                 blog["count"] += 1
                 time.sleep(3600)
             except Exception as e:
@@ -99,6 +139,6 @@ while True:
                 time.sleep(300)
         
     if all(blog["count"] >= 5 for blog in blogs):
-        print("Daily limit reached. Waiting for next cycle...")
+        print("Daily limit reached.")
         for blog in blogs: blog["count"] = 0
         time.sleep(3600)
